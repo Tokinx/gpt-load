@@ -537,6 +537,7 @@ export default {
         columns: {
           credential: 'Credential',
           status: 'Status',
+          priority: 'Priority',
           weight: 'Weight',
           effective: 'Effective weight',
           cooldown: 'Cooldown until',
@@ -547,6 +548,7 @@ export default {
         effective: 'Raw effective weight',
         null: 'null',
         none: '—',
+        groupPriority: 'Group priority {value}',
         group: 'Group weight {value}',
       },
       excluded: {

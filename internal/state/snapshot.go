@@ -54,6 +54,7 @@ type GroupConfig struct {
 	ValidationModel    string
 	Models             []ModelConfig
 	Settings           config.Settings
+	PriorityManual     *int
 	WeightManual       *int
 	Enabled            bool
 	Proxy              *outboundproxy.Config
@@ -65,6 +66,7 @@ type CredentialConfig struct {
 	ID                 uint
 	GroupID            uint
 	Status             CredentialStatus
+	PriorityManual     *int
 	WeightManual       *int
 	Version            uint64
 	IdentityGeneration uint64
@@ -168,6 +170,7 @@ type GroupView struct {
 	CodexLiveMode             CodexLiveMode
 	ResponsesWebsocketEnabled bool
 	EmptyResponseRetry        bool
+	PriorityManual            *int
 	WeightManual              *int
 	Proxy                     outboundproxy.Effective
 	ParameterOverrides        parameteroverride.Rules
@@ -179,6 +182,7 @@ type GroupCatalogView struct {
 	ChannelID      channel.ID
 	ConnectionType string
 	Enabled        bool
+	PriorityManual *int
 	WeightManual   *int
 }
 
@@ -325,6 +329,7 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 			ID: group.ID, Name: group.Name, Enabled: group.Enabled,
 			ChannelID:      group.ChannelID,
 			ConnectionType: connection.Normalize(group.ConnectionType),
+			PriorityManual: clonePriority(group.PriorityManual),
 			WeightManual:   cloneWeight(group.WeightManual),
 		}
 		snapshot.GroupCatalog[group.ID] = catalogView
@@ -357,6 +362,7 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 			CodexLiveMode:             resolved.CodexLiveMode,
 			ResponsesWebsocketEnabled: resolved.ResponsesWebsocketEnabled,
 			EmptyResponseRetry:        resolved.EmptyResponseRetry,
+			PriorityManual:            clonePriority(group.PriorityManual),
 			WeightManual:              cloneWeight(group.WeightManual),
 			ConnectionType:            connection.Normalize(group.ConnectionType),
 			Proxy:                     groupProxy,
@@ -606,6 +612,9 @@ func validateCompileInput(input CompileInput) error {
 		if err := validateManualWeight(fmt.Sprintf("group %d", group.ID), group.WeightManual); err != nil {
 			return err
 		}
+		if err := validateManualPriority(fmt.Sprintf("group %d", group.ID), group.PriorityManual); err != nil {
+			return err
+		}
 		seenModels := make(map[[2]string]struct{}, len(group.Models))
 		for _, model := range group.Models {
 			if strings.TrimSpace(model.ID) == "" {
@@ -641,6 +650,9 @@ func validateCompileInput(input CompileInput) error {
 			return fmt.Errorf("credential %d has invalid status %q", credential.ID, credential.Status)
 		}
 		if err := validateManualWeight(fmt.Sprintf("credential %d", credential.ID), credential.WeightManual); err != nil {
+			return err
+		}
+		if err := validateManualPriority(fmt.Sprintf("credential %d", credential.ID), credential.PriorityManual); err != nil {
 			return err
 		}
 		if credential.Version == 0 {

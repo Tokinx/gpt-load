@@ -146,6 +146,7 @@ export interface GroupSettingsDto {
   validation_protocol: AccessProtocol | null
   validation_protocols: AccessProtocol[]
   enabled: boolean
+  priority_manual: number | null
   weight_manual: number | null
   overrides: GroupRuntimeConfigDto
   effective: GroupEffectiveConfigDto
@@ -289,6 +290,7 @@ export interface CredentialItemDto {
   observation?: CredentialObservationDto
   configured_status: CredentialConfiguredStatus
   effective_status: CredentialStatus
+  priority: number
   weight: number
   recent_success_count: number
   recent_failure_count: number
