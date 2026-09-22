@@ -14,7 +14,8 @@ import (
 // ModernCredentialItem 复用凭据读快照，仅补充配置来源，不改变经典 API 或调度逻辑。
 type ModernCredentialItem struct {
 	CredentialItemResponse
-	WeightManual *int `json:"weight_manual"`
+	PriorityManual *int `json:"priority_manual"`
+	WeightManual   *int `json:"weight_manual"`
 }
 
 // 仅新版集合接口接受这些展示条件；经典接口仍使用原查询合同。
@@ -160,7 +161,11 @@ func (s *Server) handleListModernCredentials(c *gin.Context) {
 	}
 	s.service.enrichCredentialActivityIDs(c.Request.Context(), result.Items, ids)
 	for _, item := range result.Items {
-		items = append(items, ModernCredentialItem{CredentialItemResponse: item, WeightManual: item.WeightManual})
+		items = append(items, ModernCredentialItem{
+			CredentialItemResponse: item,
+			PriorityManual:         item.PriorityManual,
+			WeightManual:           item.WeightManual,
+		})
 	}
 	response.SuccessI18n(c, "common.success", struct {
 		CredentialCollectionResponse
@@ -192,7 +197,11 @@ func (s *Server) handleGetModernCredential(c *gin.Context) {
 		Credential  ModernCredentialItem          `json:"credential"`
 		Observation CredentialObservationResponse `json:"observation"`
 	}{
-		Credential:  ModernCredentialItem{CredentialItemResponse: result.Credential, WeightManual: result.Credential.WeightManual},
+		Credential:  ModernCredentialItem{
+			CredentialItemResponse: result.Credential,
+			PriorityManual:         result.Credential.PriorityManual,
+			WeightManual:           result.Credential.WeightManual,
+		},
 		Observation: result.Observation,
 	})
 }

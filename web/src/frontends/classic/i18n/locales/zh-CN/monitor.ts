@@ -513,6 +513,7 @@ export default {
         columns: {
           credential: '凭据',
           status: '状态',
+          priority: '优先级',
           weight: '权重',
           effective: '有效权重',
           cooldown: '冷却到期',
@@ -523,6 +524,7 @@ export default {
         effective: '原始有效权重',
         null: 'null',
         none: '—',
+        groupPriority: '分组优先级 {value}',
         group: '分组权重 {value}',
       },
       excluded: {
