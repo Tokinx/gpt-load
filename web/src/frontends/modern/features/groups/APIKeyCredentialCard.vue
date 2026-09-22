@@ -80,18 +80,18 @@ const issues = computed(() =>
     <dl class="modern-api-card-metadata">
       <div>
         <dt>{{ t('groupDetail.lastUsed') }}</dt>
-        <dd><AppOverflowText :text="credentialTime(row.lastUsed, locale)" /></dd>
+        <dd>
+          <AppOverflowText :text="credentialTime(row.lastUsed, locale)" />
+          <CredentialRoutingMeta :row="row" :priority="false" :weight="false" />
+        </dd>
       </div>
-      <div>
+      <div v-if="row.priorityManual != null">
         <dt>{{ t('credentialCards.priority') }}</dt>
-        <dd>{{ n(row.priority) }}</dd>
+        <dd>{{ n(row.priorityManual) }}</dd>
       </div>
-      <div>
+      <div v-if="row.weightManual != null">
         <dt>{{ t('credentialCards.weight') }}</dt>
-        <dd
-          >{{ n(row.weight)
-          }}<CredentialRoutingMeta :row="row" :priority="false" :weight="false"
-        /></dd>
+        <dd>{{ n(row.weightManual) }}</dd>
       </div>
     </dl>
     <template #footer
