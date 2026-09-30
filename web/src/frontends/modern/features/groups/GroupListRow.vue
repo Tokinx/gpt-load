@@ -27,16 +27,21 @@ import { useApiClient } from '@shared/http/client-context'
 const props = defineProps<{
   group: GroupRow
   expanded: boolean
-  pending?: 'toggle' | 'weight'
+  pending?: 'toggle' | 'priority' | 'weight'
   enabledOverride?: boolean
   usage?: GroupUsage
   usageLoading: boolean
   usageIncomplete: boolean
+  priorityError?: string
   weightError?: string
 }>()
 const emit = defineEmits<{
   expand: []
   toggle: [value: boolean]
+  priority: [value: number]
+  priorityEditing: [value: boolean]
+  priorityDirty: [value: boolean]
+  clearPriorityError: []
   weight: [value: number]
   weightEditing: [value: boolean]
   weightDirty: [value: boolean]
@@ -314,8 +319,25 @@ const lastActive = computed(() =>
           @update:model-value="emit('toggle', $event)"
         />
         <AppInlineNumber
+          :model-value="group.priority"
+          :label="t('groups.edit.priority')"
+          :edit-label="t('groups.row.editPriority')"
+          :save-label="t('groups.row.savePriority')"
+          :min="1"
+          :max="100"
+          :pending="pending === 'priority'"
+          :disabled="Boolean(pending)"
+          :error="priorityError"
+          @submit="emit('priority', $event)"
+          @editing="emit('priorityEditing', $event)"
+          @dirty="emit('priorityDirty', $event)"
+          @clear-error="emit('clearPriorityError')"
+        />
+        <AppInlineNumber
           :model-value="group.weight"
           :label="t('groups.edit.weight')"
+          :edit-label="t('groups.row.editWeight')"
+          :save-label="t('groups.row.saveWeight')"
           :min="1"
           :max="100"
           :pending="pending === 'weight'"
@@ -523,6 +545,12 @@ const lastActive = computed(() =>
   .modern-group-actions {
     grid-column: 1 / -1;
     justify-content: start;
+  }
+  .modern-group-actions :deep(.modern-switch) {
+    grid-row: 1 / span 2;
+  }
+  .modern-group-actions :deep(.modern-inline-number) {
+    grid-column: 2;
   }
   .modern-group-details > :first-child {
     margin-right: 0;

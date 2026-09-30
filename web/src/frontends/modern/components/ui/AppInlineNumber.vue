@@ -14,6 +14,8 @@ const props = defineProps<{
   label: string
   min: number
   max: number
+  editLabel?: string
+  saveLabel?: string
   pending?: boolean
   disabled?: boolean
   error?: string
@@ -107,9 +109,15 @@ defineExpose({ cancel })
 
 <template>
   <div class="modern-inline-number" @keydown.esc.stop.prevent="cancel">
+    <span class="modern-inline-number-label">{{ label }}</span>
     <PopoverRoot :open="Boolean(error)">
       <PopoverAnchor as-child>
-        <AppFieldControl size="xs" :invalid="Boolean(error)" :disabled="disabled || pending">
+        <AppFieldControl
+          class="modern-inline-number-control"
+          size="xs"
+          :invalid="Boolean(error)"
+          :disabled="disabled || pending"
+        >
           <input
             ref="input"
             v-model="draft"
@@ -123,12 +131,12 @@ defineExpose({ cancel })
             @input="emit('clearError')"
             @keydown.enter="enter"
           />
-          <AppTooltip :label="editing ? t('ui.save') : t('ui.edit')">
+          <AppTooltip :label="editing ? (saveLabel ?? t('ui.save')) : (editLabel ?? t('ui.edit'))">
             <button
               ref="action"
               type="button"
               :disabled="disabled || pending"
-              :aria-label="editing ? t('ui.save') : t('ui.edit')"
+              :aria-label="editing ? (saveLabel ?? t('ui.save')) : (editLabel ?? t('ui.edit'))"
               @click="editing ? submit() : start()"
             >
               <AppIcon
@@ -176,7 +184,12 @@ defineExpose({ cancel })
   width: var(--modern-inline-number-width);
   flex: none;
 }
-.modern-inline-number > :first-child {
+.modern-inline-number-label {
+  display: none;
+  color: var(--modern-muted);
+  font-size: var(--modern-font-size-small);
+}
+.modern-inline-number-control {
   flex: 1;
   min-width: 0;
 }
@@ -220,6 +233,11 @@ defineExpose({ cancel })
 @media (max-width: 760px) {
   .modern-inline-number {
     width: 160px;
+    flex-wrap: wrap;
+  }
+  .modern-inline-number-label {
+    display: block;
+    flex: 0 0 100%;
   }
   .modern-inline-number input {
     font-size: var(--modern-font-size-input-mobile);

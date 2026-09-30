@@ -1,7 +1,16 @@
 <script setup lang="ts">
-import { ArrowRight, KeyRound, Layers3, Plus, Search, TriangleAlert, UserRound } from '@lucide/vue'
+import {
+  ArrowRight,
+  KeyRound,
+  Layers3,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  TriangleAlert,
+  UserRound,
+} from '@lucide/vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
@@ -17,9 +26,11 @@ import type {
 import { channelsQueryOptions, type ChannelDto } from '@/app/resources/channels'
 import {
   cacheGroupSettings,
+  getGroupSettings,
   groupCollectionQueryOptions,
   invalidateGroupSettingsDependents,
   updateGroupSettings,
+  type GroupSettingsUpdateRequest,
 } from '@/app/resources/groups'
 import { groupDetailLocation, groupsLocation, importLocation } from '@/app/route-locations'
 import { useCollectionLoading } from '@/app/loading-state'
@@ -35,6 +46,7 @@ import PageFrame from '@/components/layout/PageFrame.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import AsyncRefreshIndicator from '@/components/ui/AsyncRefreshIndicator.vue'
+import AppPopover from '@/components/ui/AppPopover.vue'
 import AppSearchInput from '@/components/ui/AppSearchInput.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import CopyChip from '@/components/ui/CopyChip.vue'
@@ -115,6 +127,99 @@ async function toggleGroupEnabled(group: GroupCollectionItemDto, next: boolean):
     togglingGroupIDs.value = pending
   }
 }
+// 分组列表只返回渠道/状态等摘要，权重与优先级需要就地读取分组设置后再用同一 PUT 保存。
+const routingEditorGroupID = ref<number>()
+const routingPriority = ref(50)
+const routingWeight = ref(50)
+const routingBusy = ref(false)
+const routingError = ref('')
+const routingReady = ref(false)
+const routingOriginal = ref({ priority: 50, weight: 50 })
+let routingController: AbortController | undefined
+let routingRequest = 0
+
+function setRoutingPriority(value: string): void {
+  routingPriority.value = Number(value)
+}
+function setRoutingWeight(value: string): void {
+  routingWeight.value = Number(value)
+}
+
+function routingDraftValid(): boolean {
+  const valid = (value: number) => Number.isInteger(value) && value >= 1 && value <= 100
+  return valid(routingPriority.value) && valid(routingWeight.value)
+}
+
+async function openRoutingEditor(group: GroupCollectionItemDto): Promise<void> {
+  const request = ++routingRequest
+  routingController?.abort()
+  const controller = new AbortController()
+  routingController = controller
+  routingEditorGroupID.value = group.id
+  routingReady.value = false
+  routingPriority.value = 50
+  routingWeight.value = 50
+  routingError.value = ''
+  routingBusy.value = true
+  try {
+    const settings = await getGroupSettings(client, group.id, controller.signal)
+    if (request !== routingRequest) return
+    routingPriority.value = settings.priority_manual ?? 50
+    routingWeight.value = settings.weight_manual ?? 50
+    routingOriginal.value = { priority: routingPriority.value, weight: routingWeight.value }
+    routingReady.value = true
+  } catch {
+    if (request === routingRequest) routingError.value = t('groups.collection.routingLoadFailed')
+  } finally {
+    if (request === routingRequest) routingBusy.value = false
+  }
+}
+
+function closeRoutingEditor(): void {
+  routingRequest += 1
+  routingController?.abort()
+  routingController = undefined
+  routingEditorGroupID.value = undefined
+  routingReady.value = false
+  routingBusy.value = false
+  routingError.value = ''
+}
+
+async function saveRouting(group: GroupCollectionItemDto): Promise<void> {
+  if (routingBusy.value || !routingReady.value || routingEditorGroupID.value !== group.id) return
+  if (!routingDraftValid()) {
+    routingError.value = t('groups.collection.routingInvalid')
+    return
+  }
+  const patch: GroupSettingsUpdateRequest = {}
+  if (routingPriority.value !== routingOriginal.value.priority)
+    patch.priority_manual = routingPriority.value
+  if (routingWeight.value !== routingOriginal.value.weight)
+    patch.weight_manual = routingWeight.value
+  if (!Object.keys(patch).length) {
+    closeRoutingEditor()
+    return
+  }
+  const request = routingRequest
+  routingBusy.value = true
+  routingError.value = ''
+  try {
+    const settings = await updateGroupSettings(client, group.id, patch)
+    cacheGroupSettings(queryClient, group.id, settings)
+    await invalidateGroupSettingsDependents(queryClient, group.id)
+    toast.show({
+      message: t('groups.collection.routingSaved', { name: group.name }),
+      tone: 'success',
+    })
+    if (request === routingRequest) closeRoutingEditor()
+  } catch {
+    if (request === routingRequest) routingError.value = t('groups.collection.routingSaveFailed')
+  } finally {
+    if (request === routingRequest) routingBusy.value = false
+  }
+}
+onBeforeUnmount(closeRoutingEditor)
+
 const hasFilterCriteria = computed(
   () =>
     filters.value.q !== undefined ||
@@ -591,6 +696,71 @@ function connectionTypeBadgeClass(type: ConnectionType): string {
               </div>
 
               <div class="ledger-record-list__cell record-actions" role="cell">
+                <AppPopover
+                  :open="routingEditorGroupID === group.id"
+                  align="end"
+                  @update:open="(open) => (open ? openRoutingEditor(group) : closeRoutingEditor())"
+                >
+                  <template #trigger>
+                    <IconButton
+                      variant="ghost"
+                      size="compact"
+                      :label="t('groups.collection.editRouting', { name: group.name })"
+                    >
+                      <SlidersHorizontal :size="15" aria-hidden="true" />
+                    </IconButton>
+                  </template>
+                  <form class="group-routing-editor" @submit.prevent="saveRouting(group)">
+                    <p class="group-routing-editor__title">
+                      {{ t('groups.collection.routingTitle') }}
+                    </p>
+                    <label class="group-routing-editor__field">
+                      <span>{{ t('groups.collection.routingPriority') }}</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        step="1"
+                        inputmode="numeric"
+                        :value="routingPriority"
+                        :disabled="routingBusy || !routingReady"
+                        @input="setRoutingPriority(($event.target as HTMLInputElement).value)"
+                      />
+                    </label>
+                    <label class="group-routing-editor__field">
+                      <span>{{ t('groups.collection.routingWeight') }}</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        step="1"
+                        inputmode="numeric"
+                        :value="routingWeight"
+                        :disabled="routingBusy || !routingReady"
+                        @input="setRoutingWeight(($event.target as HTMLInputElement).value)"
+                      />
+                    </label>
+                    <p v-if="routingError" class="group-routing-editor__error" role="alert">
+                      {{ routingError }}
+                    </p>
+                    <div class="group-routing-editor__actions">
+                      <AppButton
+                        variant="ghost"
+                        size="compact"
+                        :disabled="routingBusy"
+                        @click="closeRoutingEditor"
+                        >{{ t('common.cancel') }}</AppButton
+                      >
+                      <AppButton
+                        type="submit"
+                        size="compact"
+                        :busy="routingBusy"
+                        :disabled="!routingReady"
+                        >{{ t('group.settings.save') }}</AppButton
+                      >
+                    </div>
+                  </form>
+                </AppPopover>
                 <RouterLink
                   v-slot="{ navigate }"
                   :to="importLocation({ mode: 'existing', group_id: group.id })"
@@ -789,6 +959,44 @@ function connectionTypeBadgeClass(type: ConnectionType): string {
   align-items: center;
   justify-content: flex-start;
   gap: 6px;
+}
+
+.group-routing-editor {
+  display: grid;
+  gap: 10px;
+  min-width: 220px;
+}
+.group-routing-editor__title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.group-routing-editor__field {
+  display: grid;
+  gap: 4px;
+  font-size: var(--text-label-xs);
+  color: var(--color-text-muted);
+}
+.group-routing-editor__field input {
+  width: 100%;
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 6px 8px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.group-routing-editor__error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--text-label-xs);
+}
+.group-routing-editor__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .mobile-label {
