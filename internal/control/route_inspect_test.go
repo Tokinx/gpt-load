@@ -506,13 +506,13 @@ func TestRouteInspectEndpointReturnsCurrentSafeExplanation(t *testing.T) {
 		!primary.RouteRequirementSatisfied ||
 		routeModelValue(primary.UpstreamModel) != "provider-model" ||
 		primary.WeightManual != nil || !primary.Included ||
-		!primary.Routable || primary.ReasonCode != nil ||
+		!primary.Routable || !primary.Active || primary.ReasonCode != nil ||
 		len(primary.Credentials) != 2 ||
 		primary.Credentials[0].CredentialID != 21 || primary.Credentials[1].CredentialID != 22 {
 		t.Fatalf("primary group = %#v", primary)
 	}
 	available := primary.Credentials[0]
-	if !available.Available || available.ReasonCode != nil ||
+	if !available.Available || !available.Active || available.StandbyReason != nil || available.ReasonCode != nil ||
 		available.Weight != 25 || available.EffectiveWeight != 50*25 ||
 		available.CooldownUntilMS != nil {
 		t.Fatalf("available key = %#v", available)
@@ -525,7 +525,7 @@ func TestRouteInspectEndpointReturnsCurrentSafeExplanation(t *testing.T) {
 	}
 	assertRouteReason(t, cooldown.ReasonCode, scheduler.ReasonCredentialCooldown)
 	backup := got.Groups[1]
-	if backup.GroupName != "backup" ||
+	if backup.GroupName != "backup" || !backup.Active ||
 		routeModelValue(backup.UpstreamModel) != "provider-backup" ||
 		backup.WeightManual == nil || *backup.WeightManual != 20 ||
 		!backup.Included || !backup.Routable || backup.ReasonCode != nil ||
@@ -533,6 +533,7 @@ func TestRouteInspectEndpointReturnsCurrentSafeExplanation(t *testing.T) {
 		!backup.Credentials[0].Available || backup.Credentials[0].ReasonCode != nil ||
 		backup.Credentials[0].Weight != 30 ||
 		backup.Credentials[0].EffectiveWeight != 20*30 ||
+		backup.Credentials[0].StandbyReason != nil ||
 		backup.Credentials[0].CooldownUntilMS != nil {
 		t.Fatalf("backup group = %#v", backup)
 	}

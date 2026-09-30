@@ -212,9 +212,10 @@ export default {
         danger: '危険な操作',
       },
       routing: {
-        description: 'リクエスト分配に使うグループの相対的な重みを設定します。',
+        description: '優先度が主系／待機階層を決め、重みは同階層の公平配分にのみ使います。',
+        priorityHelp: '既定値 50、範囲 1～100。値が大きいほど先に現行階層へ入ります。',
         weightHelp:
-          '既定値は 50、範囲は 1–100 です。認証情報の重みと掛け合わせて分配比率を決定します。',
+          '既定値 50、範囲 1～100。認証情報ウェイトと掛け合わせた有効ウェイトによる同階層の公平配分にのみ使われ、階層の決定には使いません。',
       },
       headers: {
         description:
@@ -324,9 +325,11 @@ export default {
         validationModelPlaceholder: 'モデル ID を検索または入力',
         validationModelHelp:
           '空欄の場合はグループの最初のモデルを使用します。エイリアスではなくアップストリームのモデル ID を入力してください。',
+        priority: 'グループの優先度',
         weight: 'グループの重み',
         auto: '自動',
         manual: '手動',
+        priorityError: '1～100 の整数を入力してください',
         weightError: '1～100 の整数を入力してください',
         enabled: 'グループを有効化',
         enabledHelp: '無効にすると新しいリクエストではこのグループを選択しません',

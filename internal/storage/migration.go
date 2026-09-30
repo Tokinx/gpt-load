@@ -114,6 +114,7 @@ var migrations = []migration{
 	{ID: migrationfiles.ID0021, Up: migrationfiles.Up0021, Validate: migrationfiles.Validate0021, ValidateRecoverable: migrationfiles.ValidateRecoverable0021},
 	{ID: migrationfiles.ID0022, Up: migrationfiles.Up0022, Validate: migrationfiles.Validate0022, ValidateRecoverable: migrationfiles.ValidateRecoverable0022},
 	{ID: migrationfiles.ID0023, Up: migrationfiles.Up0023, Validate: migrationfiles.Validate0023, ValidateRecoverable: migrationfiles.ValidateRecoverable0023},
+	{ID: migrationfiles.ID0024, Up: migrationfiles.Up0024, Validate: migrationfiles.Validate0024, ValidateRecoverable: migrationfiles.ValidateRecoverable0024},
 }
 
 func applyMigrations(db *gorm.DB) error {
@@ -177,6 +178,34 @@ func validateMigrationRegistry(entries []migration) error {
 	return nil
 }
 
+// retiredForkMigrationIDs are priority migrations emitted by older versions of
+// this fork before upstream occupied migration 0023. They are intentionally
+// allowlisted so the upstream 0023 migration can run, followed by 0024.
+var retiredForkMigrationIDs = []string{
+	"0021_priority_manual",
+	"0022_priority_manual",
+	"0023_priority_manual",
+}
+
+func rewriteRetiredForkMigrationLedger(db *gorm.DB) error {
+	exists, err := migrationTableExists(db, migrationLedgerTable)
+	if err != nil {
+		return fmt.Errorf("inspect schema_migrations: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	for _, id := range retiredForkMigrationIDs {
+		for _, candidate := range []string{id, migrationResumeMarker(id)} {
+			result := db.Table(migrationLedgerTable).Where("id = ?", candidate).Delete(&schemaMigration{})
+			if result.Error != nil {
+				return fmt.Errorf("remove retired migration ledger entry %q: %w", candidate, result.Error)
+			}
+		}
+	}
+	return nil
+}
+
 func applyMigrationsLocked(db *gorm.DB, entries []migration, useMigrationTransactions bool) error {
 	hadMigrationLedger, err := migrationTableExists(db, migrationLedgerTable)
 	if err != nil {
@@ -196,6 +225,10 @@ func applyMigrationsLocked(db *gorm.DB, entries []migration, useMigrationTransac
 		if err := db.AutoMigrate(&schemaMigration{}); err != nil {
 			return fmt.Errorf("create schema_migrations: %w", err)
 		}
+	}
+
+	if err := rewriteRetiredForkMigrationLedger(db); err != nil {
+		return err
 	}
 
 	var applied []string

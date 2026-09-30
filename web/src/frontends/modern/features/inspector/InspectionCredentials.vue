@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useApiClient } from '@shared/http/client-context'
 import { InvalidResponseError } from '@shared/http/errors'
-import type { InspectionGroup } from '@modern/api/inspector'
+import type { InspectionCredential, InspectionGroup } from '@modern/api/inspector'
 import { getGroupCredentials } from '@modern/api/group-detail'
 import {
   AppBadge,
@@ -14,9 +14,15 @@ import {
   AppIconButton,
   AppOverflowText,
   AppPagination,
+  AppTooltip,
 } from '@modern/components/ui'
 import { credentialTime } from '@modern/features/groups/credential-presentation'
-import { groupWeight, reasonLabel } from './inspection-display'
+import {
+  credentialActive,
+  groupWeight,
+  reasonLabel,
+  standbyReasonLabel,
+} from './inspection-display'
 
 const props = defineProps<{ group: InspectionGroup; observedAt: number }>()
 const { t, n, locale } = useI18n()
@@ -27,11 +33,24 @@ const pageSize = ref(20)
 const rows = computed(() =>
   [...props.group.credentials].sort(
     (a, b) =>
+      Number(credentialActive(b)) - Number(credentialActive(a)) ||
       Number(b.available) - Number(a.available) ||
       b.effectiveWeight - a.effectiveWeight ||
       a.id - b.id,
   ),
 )
+function credentialLabel(credential: InspectionCredential): string {
+  if (!credential.available) return reasonLabel(credential.reason, t)
+  return credential.active ? t('inspector.available') : t('inspector.standbyCredential')
+}
+// 备用凭据仍可用；此处的 tone 不表示故障。
+function credentialTone(credential: InspectionCredential): 'success' | 'info' | 'neutral' {
+  if (!credential.available) return 'neutral'
+  return credential.active ? 'success' : 'info'
+}
+function credentialNote(credential: InspectionCredential): string {
+  return standbyReasonLabel(credential.standbyReason, t) || ''
+}
 const visible = computed(() =>
   rows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value),
 )
@@ -92,11 +111,18 @@ function setPageSize(value: number): void {
   <div class="modern-inspection-credentials">
     <div class="modern-inspection-weights">
       <span
-        >{{ t('inspector.groupWeight') }} <strong>{{ n(group.weight ?? 50) }}</strong></span
+        >{{ t('inspector.groupPriority') }} <strong>{{ n(group.priority ?? 50) }}</strong></span
       >
-      <span
-        >{{ t('inspector.effectiveWeight') }} <strong>{{ n(groupWeight(group)) }}</strong></span
-      >
+      <AppTooltip :label="t('inspector.groupWeightHint')">
+        <span
+          >{{ t('inspector.groupWeight') }} <strong>{{ n(group.weight ?? 50) }}</strong></span
+        >
+      </AppTooltip>
+      <AppTooltip :label="t('inspector.layerWeightHint')">
+        <span
+          >{{ t('inspector.layerWeight') }} <strong>{{ n(groupWeight(group)) }}</strong></span
+        >
+      </AppTooltip>
     </div>
     <div v-if="identities.isError.value" class="modern-inspection-name-error" role="status">
       <span>{{ t('inspector.identitiesFailed') }}</span>
@@ -129,10 +155,13 @@ function setPageSize(value: number): void {
           role="row"
         >
           <div role="cell"><AppOverflowText :text="identity(row.id)" /></div>
-          <div role="cell">
-            <AppBadge :tone="row.available ? 'success' : 'neutral'" variant="plain" size="xs" dot>
-              {{ row.available ? t('inspector.available') : reasonLabel(row.reason, t) }}
+          <div role="cell" class="modern-inspection-status">
+            <AppBadge :tone="credentialTone(row)" variant="plain" size="xs" dot>
+              {{ credentialLabel(row) }}
             </AppBadge>
+            <span v-if="credentialNote(row)" class="modern-inspection-status-note">{{
+              credentialNote(row)
+            }}</span>
           </div>
           <span role="cell">{{ n(row.weight) }}</span>
           <span role="cell">{{ n(row.effectiveWeight) }}</span>
@@ -192,6 +221,16 @@ function setPageSize(value: number): void {
   margin-inline-start: var(--modern-space-1);
   color: var(--modern-text);
   font-weight: var(--modern-weight-medium);
+}
+.modern-inspection-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--modern-space-1);
+}
+.modern-inspection-status-note {
+  color: var(--modern-muted);
+  font-size: var(--modern-font-size-small);
 }
 .modern-inspection-empty {
   color: var(--modern-muted);

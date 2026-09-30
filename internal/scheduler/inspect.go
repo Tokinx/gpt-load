@@ -40,6 +40,9 @@ const (
 	ReasonCredentialWeightZero      ReasonCode = "credential_weight_zero"
 	ReasonCredentialNotAllowed      ReasonCode = "credential_not_allowed"
 	ReasonNoAvailableCredential     ReasonCode = "no_available_credential"
+	ReasonRouteModeStandby          ReasonCode = "route_mode_standby"
+	ReasonStoreDowngradedStandby    ReasonCode = "store_downgraded_standby"
+	ReasonGroupPriorityStandby      ReasonCode = "lower_group_priority"
 )
 
 type Inspection struct {
@@ -59,9 +62,11 @@ type GroupInspection struct {
 	RouteMode                 channel.RouteMode
 	RouteRequirementSatisfied bool
 	UpstreamModelID           *string
+	PriorityManual            *int
 	WeightManual              *int
 	Included                  bool
 	Routable                  bool
+	Active                    bool
 	Reason                    ReasonCode
 	Credentials               []CredentialInspection
 }
@@ -69,6 +74,8 @@ type GroupInspection struct {
 type CredentialInspection struct {
 	CredentialID    uint
 	Available       bool
+	Active          bool
+	StandbyReason   ReasonCode
 	Reason          ReasonCode
 	WeightManual    *int
 	EffectiveWeight int64
@@ -262,6 +269,8 @@ func effectiveWeight(groupManual, credentialManual *int) int64 {
 	if groupWeight <= 0 || credentialWeight <= 0 {
 		return 0
 	}
+	// Priority determines the primary/standby layer. Group and credential
+	// weights are only used for fairness among candidates in the same layer.
 	return int64(groupWeight) * int64(credentialWeight)
 }
 
@@ -269,6 +278,7 @@ func inspectCredential(
 	group state.GroupCatalogView,
 	credential CredentialRuntimeView,
 	allowedCredentialIDs map[uint]struct{},
+	allowedCredentialRefs map[uint]credentialIdentity,
 	now time.Time,
 	model string,
 	operation execution.Operation,
@@ -283,6 +293,13 @@ func inspectCredential(
 	}
 	if allowedCredentialIDs != nil {
 		if _, allowed := allowedCredentialIDs[credential.ID]; !allowed {
+			result.Reason = ReasonCredentialNotAllowed
+			return result
+		}
+	}
+	if allowedCredentialRefs != nil {
+		ref, allowed := allowedCredentialRefs[credential.ID]
+		if !allowed || ref.GroupID != credential.GroupID || ref.IdentityGeneration != credential.IdentityGeneration {
 			result.Reason = ReasonCredentialNotAllowed
 			return result
 		}
@@ -372,41 +389,75 @@ func Inspect(
 	if err != nil {
 		return Inspection{}, err
 	}
-	for _, decision := range decisions {
+	candidateDecisions, _, err := evaluateTargets(
+		snapshot,
+		snapshot.ExecutionCandidates,
+		normalized,
+	)
+	if err != nil {
+		return Inspection{}, err
+	}
+	candidateTargets := make(map[inspectionTargetKey]struct{}, len(candidateDecisions))
+	for _, decision := range candidateDecisions {
+		if decision.included {
+			candidateTargets[inspectionTargetKeyOf(decision)] = struct{}{}
+		}
+	}
+
+	type candidateRef struct{ group, credential int }
+	type inspectionCandidate struct {
+		ref             candidateRef
+		storeDowngraded bool
+		mode            channel.RouteMode
+		policy          routingCandidate
+	}
+	candidates := make([]inspectionCandidate, 0)
+	groups := make([]GroupInspection, 0, len(decisions))
+	for groupIndex, decision := range decisions {
+		groupPolicy := decision.group
+		if view, exists := snapshot.Groups[decision.group.ID]; exists {
+			groupPolicy.PriorityManual = cloneWeight(view.PriorityManual)
+			groupPolicy.WeightManual = cloneWeight(view.WeightManual)
+		}
 		groupResult := GroupInspection{
-			GroupID: decision.group.ID, GroupName: decision.group.Name,
+			GroupID: groupPolicy.ID, GroupName: groupPolicy.Name,
 			ChannelID:                 decision.target.ResolvedTarget.ChannelID,
 			RouteMode:                 decision.target.Mode,
 			RouteRequirementSatisfied: decision.requirementOK,
 			UpstreamModelID:           optionalModel(decision.target.UpstreamModelID),
-			WeightManual:              cloneWeight(decision.group.WeightManual),
+			PriorityManual:            cloneWeight(groupPolicy.PriorityManual),
+			WeightManual:              cloneWeight(groupPolicy.WeightManual),
 			Included:                  decision.included, Reason: decision.reason,
 			Credentials: []CredentialInspection{},
 		}
 		if !decision.included {
-			result.Groups = append(result.Groups, groupResult)
+			groups = append(groups, groupResult)
 			continue
 		}
+
 		groupCredentials := credentialsByGroup[decision.group.ID]
-		groupWeightZero := decision.group.WeightManual != nil &&
-			*decision.group.WeightManual == 0
-		for _, credential := range groupCredentials {
+		for credentialIndex, credential := range groupCredentials {
 			credentialResult := inspectCredential(
-				decision.group,
-				credential,
-				normalized.allowedCredentialIDs,
-				now,
-				decision.target.UpstreamModelID,
-				normalized.operation,
+				groupPolicy, credential, normalized.allowedCredentialIDs, normalized.allowedCredentialRefs, now,
+				decision.target.UpstreamModelID, normalized.operation,
 			)
 			groupResult.Credentials = append(groupResult.Credentials, credentialResult)
-		}
-		for _, credential := range groupResult.Credentials {
-			if credential.Available && credential.EffectiveWeight > 0 {
+			if credentialResult.Available && credentialResult.EffectiveWeight > 0 {
 				groupResult.Routable = true
-				break
+			}
+			if _, included := candidateTargets[inspectionTargetKeyOf(decision)]; included &&
+				credentialResult.Available && credentialResult.EffectiveWeight > 0 {
+				candidates = append(candidates, inspectionCandidate{
+					ref:             candidateRef{group: groupIndex, credential: credentialIndex},
+					storeDowngraded: decision.responsesStoreDowngraded,
+					mode:            decision.target.Mode,
+					policy: routingCandidate{
+						groupPriority: state.ConfiguredPriority(groupPolicy.PriorityManual),
+					},
+				})
 			}
 		}
+		groupWeightZero := groupPolicy.WeightManual != nil && *groupPolicy.WeightManual == 0
 		switch {
 		case groupWeightZero:
 			groupResult.Reason = ReasonGroupWeightZero
@@ -415,11 +466,54 @@ func Inspect(
 		case !groupResult.Routable:
 			groupResult.Reason = ReasonNoAvailableCredential
 		}
-		if groupResult.Routable {
-			result.Routable = true
-		}
-		result.Groups = append(result.Groups, groupResult)
+		groups = append(groups, groupResult)
 	}
+
+	modeTiers := routeModeTiersForStrategy(snapshot.Settings.RouteStrategy)
+	activeLayer := -1
+	var activeTier routingTier
+	for _, pool := range []bool{false, true} {
+		if activeLayer >= 0 {
+			break
+		}
+		for layer, modes := range modeTiers {
+			layerCandidates := make([]routingCandidate, 0)
+			for _, candidate := range candidates {
+				if candidate.storeDowngraded != pool || !containsRouteMode(modes, candidate.mode) {
+					continue
+				}
+				layerCandidates = append(layerCandidates, candidate.policy)
+			}
+			if tier, ok := highestRoutingTier(layerCandidates); ok {
+				activeLayer = layer
+				if pool {
+					activeLayer = len(modeTiers) + layer
+				}
+				activeTier = tier
+				break
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		if activeLayer < 0 {
+			continue
+		}
+		layer := routeLayerIndex(candidate.storeDowngraded, candidate.mode, modeTiers)
+		credential := &groups[candidate.ref.group].Credentials[candidate.ref.credential]
+		if layer == activeLayer && inRoutingTier(candidate.policy, activeTier) {
+			credential.Active = true
+			groups[candidate.ref.group].Active = true
+			continue
+		}
+		credential.StandbyReason = inspectionStandbyReason(candidate.storeDowngraded, layer, activeLayer, len(modeTiers))
+	}
+	for _, group := range groups {
+		if group.Routable {
+			result.Routable = true
+			break
+		}
+	}
+	result.Groups = groups
 	if result.Routable {
 		return result, nil
 	}
@@ -429,4 +523,31 @@ func Inspect(
 		result.Reason = ReasonNoAvailableCredential
 	}
 	return result, nil
+}
+
+// inspectionTargetKey keeps route-catalog explanations and executable
+// candidates aligned without changing either snapshot index.
+type inspectionTargetKey struct {
+	groupID         uint
+	mode            channel.RouteMode
+	model           string
+	storeDowngraded bool
+}
+
+func inspectionTargetKeyOf(decision targetDecision) inspectionTargetKey {
+	return inspectionTargetKey{
+		groupID: decision.target.GroupID, mode: decision.target.Mode,
+		model:           decision.target.UpstreamModelID,
+		storeDowngraded: decision.responsesStoreDowngraded,
+	}
+}
+
+func inspectionStandbyReason(storeDowngraded bool, layer int, activeLayer int, modeLayerCount int) ReasonCode {
+	if layer > activeLayer {
+		if storeDowngraded && activeLayer < modeLayerCount {
+			return ReasonStoreDowngradedStandby
+		}
+		return ReasonRouteModeStandby
+	}
+	return ReasonGroupPriorityStandby
 }

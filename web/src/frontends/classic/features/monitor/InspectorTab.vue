@@ -45,7 +45,7 @@ import {
 
 type InspectorField = 'protocol' | 'externalModel' | 'accessKey'
 type InspectorErrors = Partial<Record<InspectorField, string>>
-type StatusTone = 'success' | 'warning' | 'danger' | 'neutral'
+type StatusTone = 'success' | 'info' | 'warning' | 'danger' | 'neutral'
 
 const knownReasons = new Set<RouteInspectReasonCode>([
   'access_key_disabled',
@@ -186,6 +186,8 @@ const excludedGroups = computed(() =>
 const weightedMix = computed(() => observation.value?.route_strategy === 'weighted_mix')
 const orderedIncludedGroups = computed(() =>
   [...includedGroups.value].sort((left, right) => {
+    const layerOrder = Number(isActiveLayer(right)) - Number(isActiveLayer(left))
+    if (layerOrder !== 0) return layerOrder
     const routeModeOrder = routeModePriority(left) - routeModePriority(right)
     if (routeModeOrder !== 0) return routeModeOrder
     if (left.routable !== right.routable) return left.routable ? -1 : 1
@@ -193,23 +195,12 @@ const orderedIncludedGroups = computed(() =>
     return weightOrder !== 0 ? weightOrder : left.group_id - right.group_id
   }),
 )
-const activeRouteMode = computed<'native' | 'converted' | null>(() => {
-  if (includedGroups.value.some((group) => group.routable && group.route_mode === 'native')) {
-    return 'native'
-  }
-  if (includedGroups.value.some((group) => group.routable && group.route_mode === 'converted')) {
-    return 'converted'
-  }
-  return null
-})
-const activeGroups = computed(() => includedGroups.value.filter(isActiveCandidate))
-const availableCredentialCount = computed(
+const activeGroups = computed(() => includedGroups.value.filter(isActiveLayer))
+const activeLayerCredentialCount = computed(
   () =>
     new Set(
       activeGroups.value.flatMap((group) =>
-        group.credentials
-          .filter((credential) => credential.available)
-          .map((credential) => credential.credential_id),
+        group.credentials.filter(isActiveCredential).map((credential) => credential.credential_id),
       ),
     ).size,
 )
@@ -424,6 +415,19 @@ function reasonLabel(reason: string | null): string {
   return t('monitor.inspector.reasons.unknown')
 }
 
+const knownStandbyReasons = new Set([
+  'lower_group_priority',
+  'route_mode_standby',
+  'store_downgraded_standby',
+])
+
+function standbyReasonLabel(reason: string | null): string {
+  if (reason === null) return ''
+  return knownStandbyReasons.has(reason as string)
+    ? t(`monitor.inspector.standbyReasons.${reason}`)
+    : t('monitor.inspector.standbyReasons.unknown')
+}
+
 function modelLabel(value: string | null): string {
   return value ?? t('monitor.inspector.result.modelNotSpecified')
 }
@@ -440,12 +444,25 @@ function routeModePriority(group: RouteInspectGroupDto): number {
   return weightedMix.value || group.route_mode === 'native' ? 0 : 1
 }
 
-function isActiveCandidate(group: RouteInspectGroupDto): boolean {
-  return group.routable && (weightedMix.value || group.route_mode === activeRouteMode.value)
+// active 来自后端：当前层参与本次分配，备用层只在当前层不可用时接管。
+function isActiveLayer(group: RouteInspectGroupDto): boolean {
+  return group.routable && group.active
+}
+
+function isActiveCredential(credential: RouteInspectCredentialDto): boolean {
+  return credential.available && credential.active
+}
+
+function groupStandbyReason(group: RouteInspectGroupDto): string | null {
+  if (group.active) return null
+  for (const credential of group.credentials) {
+    if (credential.available && credential.standby_reason) return credential.standby_reason
+  }
+  return null
 }
 
 function routePriorityTone(group: RouteInspectGroupDto): StatusTone {
-  if (!isActiveCandidate(group)) return 'neutral'
+  if (!isActiveLayer(group)) return 'neutral'
   return group.route_mode === 'native' ? 'success' : 'warning'
 }
 
@@ -457,13 +474,15 @@ function routePriorityLabel(group: RouteInspectGroupDto): string {
 
 function groupStatusLabel(group: RouteInspectGroupDto): string {
   if (!group.routable) return t('monitor.inspector.result.notRoutable')
-  return isActiveCandidate(group)
-    ? t('monitor.inspector.groups.weightedCandidate')
+  if (isActiveLayer(group)) return t('monitor.inspector.groups.weightedCandidate')
+  const reason = groupStandbyReason(group)
+  return reason
+    ? t('monitor.inspector.groups.standbyWithReason', { reason: standbyReasonLabel(reason) })
     : t('monitor.inspector.groups.fallbackCandidate')
 }
 
 function credentialTone(credential: RouteInspectCredentialDto): StatusTone {
-  if (credential.available) return 'success'
+  if (credential.available) return credential.active ? 'success' : 'info'
   if (
     credential.reason_code === 'credential_cooldown' ||
     credential.reason_code === 'model_cooldown'
@@ -474,18 +493,22 @@ function credentialTone(credential: RouteInspectCredentialDto): StatusTone {
 }
 
 function credentialStatusLabel(credential: RouteInspectCredentialDto): string {
-  return credential.available
+  if (!credential.available) return reasonLabel(credential.reason_code)
+  // 备用凭据仍可用，只是不在当前层。
+  return credential.active
     ? t('monitor.inspector.credentials.available')
-    : reasonLabel(credential.reason_code)
+    : t('monitor.inspector.credentials.standby')
 }
 
-function groupAvailableCredentialCount(group: RouteInspectGroupDto): number {
-  return group.credentials.filter((credential) => credential.available).length
+function groupActiveCredentialCount(group: RouteInspectGroupDto): number {
+  return group.credentials.filter(isActiveCredential).length
 }
 
+// 只有 active 凭据参与当前层份额计算。
 function groupEffectiveWeight(group: RouteInspectGroupDto): number {
   return group.credentials.reduce(
-    (total, credential) => total + (credential.available ? credential.effective_weight : 0),
+    (total, credential) =>
+      total + (isActiveCredential(credential) ? credential.effective_weight : 0),
     0,
   )
 }
@@ -494,7 +517,9 @@ function groupsEffectiveWeight(groups: readonly RouteInspectGroupDto[]): number 
   const weights = new Map<number, number>()
   for (const group of groups) {
     for (const credential of group.credentials) {
-      if (credential.available) weights.set(credential.credential_id, credential.effective_weight)
+      if (isActiveCredential(credential)) {
+        weights.set(credential.credential_id, credential.effective_weight)
+      }
     }
   }
   return [...weights.values()].reduce((total, weight) => total + weight, 0)
@@ -507,27 +532,31 @@ function activeGroupWeight(group: RouteInspectGroupDto): number {
 }
 
 function groupShare(group: RouteInspectGroupDto): number {
-  if (!isActiveCandidate(group)) return 0
+  if (!isActiveLayer(group)) return 0
   const total = totalEffectiveWeight.value
   if (total <= 0) return 0
   return Math.round((activeGroupWeight(group) / total) * 1_000) / 10
 }
 
 function groupShareLabel(group: RouteInspectGroupDto): string {
-  if (!isActiveCandidate(group)) return t('monitor.inspector.groups.standbyShare')
+  if (!isActiveLayer(group)) return t('monitor.inspector.groups.standbyShare')
   return formatPercent(activeGroupWeight(group), totalEffectiveWeight.value, locale.value)
 }
 
 function candidateCredentialSummary(group: RouteInspectGroupDto): string {
-  const available = groupAvailableCredentialCount(group)
+  const active = groupActiveCredentialCount(group)
+  const unavailable = group.credentials.filter((credential) => !credential.available).length
   return t('monitor.inspector.credentials.summary', {
-    available: formattedInteger(available),
-    unavailable: formattedInteger(group.credentials.length - available),
+    active: formattedInteger(active),
+    standby: formattedInteger(group.credentials.length - active - unavailable),
+    unavailable: formattedInteger(unavailable),
   })
 }
 
 function orderedCredentials(group: RouteInspectGroupDto): RouteInspectCredentialDto[] {
   return [...group.credentials].sort((left, right) => {
+    const layerOrder = Number(isActiveCredential(right)) - Number(isActiveCredential(left))
+    if (layerOrder !== 0) return layerOrder
     if (left.available !== right.available) return left.available ? -1 : 1
     const weightOrder = right.effective_weight - left.effective_weight
     return weightOrder !== 0 ? weightOrder : left.credential_id - right.credential_id
@@ -741,13 +770,13 @@ onBeforeUnmount(() => {
               </OverflowTooltip>
             </div>
             <div class="route-fact">
-              <dt>{{ t('monitor.inspector.result.availableCredentials') }}</dt>
+              <dt>{{ t('monitor.inspector.result.activeCredentials') }}</dt>
               <OverflowTooltip
                 as="dd"
                 class="route-fact__number"
-                :content="formattedInteger(availableCredentialCount)"
+                :content="formattedInteger(activeLayerCredentialCount)"
               >
-                {{ formattedInteger(availableCredentialCount) }}
+                {{ formattedInteger(activeLayerCredentialCount) }}
               </OverflowTooltip>
             </div>
           </dl>
@@ -819,10 +848,10 @@ onBeforeUnmount(() => {
                     t('monitor.inspector.groups.columns.credentials')
                   }}</span>
                   <strong>
-                    {{ formattedInteger(groupAvailableCredentialCount(group)) }} /
+                    {{ formattedInteger(groupActiveCredentialCount(group)) }} /
                     {{ formattedInteger(group.credentials.length) }}
                   </strong>
-                  <small>{{ t('monitor.inspector.groups.availableTotal') }}</small>
+                  <small>{{ t('monitor.inspector.groups.layerTotal') }}</small>
                 </div>
                 <div class="route-candidate__measure" role="cell">
                   <span class="route-cell-label">{{
@@ -865,8 +894,20 @@ onBeforeUnmount(() => {
                   </div>
                   <span>
                     {{
+                      t('monitor.inspector.weights.groupPriority', {
+                        value: formattedInteger(group.priority_manual ?? 50),
+                      })
+                    }}
+                    ·
+                    {{
                       t('monitor.inspector.weights.group', {
                         value: formattedInteger(group.weight_manual ?? 50),
+                      })
+                    }}
+                    ·
+                    {{
+                      t('monitor.inspector.weights.layerTotal', {
+                        value: formattedInteger(groupEffectiveWeight(group)),
                       })
                     }}
                   </span>
@@ -928,6 +969,9 @@ onBeforeUnmount(() => {
                         {{ credentialStatusLabel(credential) }}
                       </StatusBadge>
                       <code v-if="credential.reason_code">{{ credential.reason_code }}</code>
+                      <code v-else-if="credential.standby_reason">{{
+                        standbyReasonLabel(credential.standby_reason)
+                      }}</code>
                     </div>
                     <div
                       class="ledger-record-list__cell route-credential-record__weight"

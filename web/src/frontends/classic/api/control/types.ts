@@ -149,6 +149,7 @@ export interface GroupSettingsDto {
   validation_protocol: AccessProtocol | null
   validation_protocols: AccessProtocol[]
   enabled: boolean
+  priority_manual: number | null
   weight_manual: number | null
   overrides: GroupRuntimeConfigDto
   effective: GroupEffectiveConfigDto

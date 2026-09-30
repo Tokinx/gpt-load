@@ -31,7 +31,15 @@ import {
 } from '@modern/components/ui'
 import { credentialTime } from '@modern/features/groups/credential-presentation'
 import { percentage } from '@modern/features/usage/usage-display'
-import { activeGroups, groupWeight, groupsWeight, reasonLabel } from './inspection-display'
+import {
+  activeCredentialCount,
+  activeGroups,
+  groupStandbyReason,
+  groupWeight,
+  groupsWeight,
+  reasonLabel,
+  standbyReasonLabel,
+} from './inspection-display'
 import InspectionCredentials from './InspectionCredentials.vue'
 
 const props = defineProps<{
@@ -186,6 +194,7 @@ const filtered = computed(() =>
         group.channelID,
         group.model,
         reasonLabel(group.reason, t),
+        groupNote(group),
       ]
         .join(' ')
         .toLocaleLowerCase()
@@ -253,7 +262,22 @@ function status(group: InspectionGroup): string {
       ? 'blocked'
       : active(group)
         ? 'active'
-        : 'fallback'
+        : 'standby'
+}
+function statusTone(group: InspectionGroup): 'success' | 'info' | 'warning' | 'neutral' {
+  const current = status(group)
+  if (current === 'active') return 'success'
+  if (current === 'standby') return 'info'
+  return current === 'blocked' ? 'warning' : 'neutral'
+}
+// 备用层不是不可用：用凭据的 standby_reason 说明当前层之外的原因。
+function groupNote(group: InspectionGroup): string {
+  if (group.reason) return reasonLabel(group.reason, t)
+  const reason = groupStandbyReason(group)
+  return reason ? standbyReasonLabel(reason, t) || '' : ''
+}
+function layerCredentials(group: InspectionGroup): string {
+  return `${n(activeCredentialCount(group))} / ${n(group.credentials.length)}`
 }
 function toggle(group: InspectionGroup): void {
   const key = rowKey(group)
@@ -475,24 +499,12 @@ defineExpose({ refresh, pending, updatedAt })
                 }}</AppBadge>
               </div>
               <div class="modern-inspector-status" role="cell">
-                <AppBadge
-                  size="xs"
-                  variant="plain"
-                  :tone="
-                    active(group)
-                      ? 'success'
-                      : group.included && !group.routable
-                        ? 'warning'
-                        : 'neutral'
-                  "
-                  dot
-                  >{{ t('inspector.' + status(group)) }}</AppBadge
-                ><AppOverflowText v-if="group.reason" :text="reasonLabel(group.reason, t)" />
+                <AppBadge size="xs" variant="plain" :tone="statusTone(group)" dot>{{
+                  t('inspector.' + status(group))
+                }}</AppBadge
+                ><AppOverflowText v-if="groupNote(group)" :text="groupNote(group)" />
               </div>
-              <span role="cell"
-                >{{ n(group.credentials.filter((row) => row.available).length) }} /
-                {{ n(group.credentials.length) }}</span
-              >
+              <span role="cell">{{ layerCredentials(group) }}</span>
               <div class="modern-inspector-share" role="cell">
                 <span>{{ active(group) ? percentage(share(group), locale) : '—' }}</span
                 ><AppProgressBar

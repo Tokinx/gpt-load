@@ -212,9 +212,11 @@ export default {
         danger: 'Danger zone',
       },
       routing: {
-        description: 'Adjust the relative weight used for request allocation.',
+        description:
+          "Priority determines this group's primary/standby tier; weight is used only for same-tier fair sharing.",
+        priorityHelp: 'Default: 50. Range: 1–100. Higher values enter the active tier first.',
         weightHelp:
-          'Default: 50. Range: 1–100. Multiplied by credential weight to determine allocation shares.',
+          'Default: 50. Range: 1–100. It multiplies with credential weight for same-tier fair sharing and does not select the primary/standby tier.',
       },
       headers: {
         description:
@@ -324,9 +326,11 @@ export default {
         validationModelPlaceholder: 'Search or enter a model ID',
         validationModelHelp:
           'Leave empty to use the first model in this Group; enter the upstream model ID, not an alias.',
+        priority: 'Group priority',
         weight: 'Group weight',
         auto: 'Auto',
         manual: 'Manual',
+        priorityError: 'Enter a whole number from 1 to 100',
         weightError: 'Enter a whole number from 1 to 100',
         enabled: 'Group enabled',
         enabledHelp: 'When disabled, new requests no longer select this Group',

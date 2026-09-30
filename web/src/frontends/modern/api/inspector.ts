@@ -11,7 +11,9 @@ export interface InspectionRequest {
 export interface InspectionCredential {
   id: number
   available: boolean
+  active: boolean
   reason: string | null
+  standbyReason: string | null
   weight: number
   effectiveWeight: number
   cooldownUntil: number | null
@@ -23,8 +25,10 @@ export interface InspectionGroup {
   mode: 'native' | 'converted'
   requirementSatisfied: boolean
   model: string | null
+  priority: number | null
   weight: number | null
   included: boolean
+  active: boolean
   routable: boolean
   reason: string | null
   credentials: InspectionCredential[]
@@ -78,8 +82,10 @@ export async function inspectRoute(
         mode: oneOf(group.route_mode, ['native', 'converted']),
         requirementSatisfied: boolean(group.route_requirement_satisfied),
         model: optionalText(group.upstream_model),
+        priority: optionalNumber(group.priority_manual),
         weight: optionalNumber(group.weight_manual),
         included: boolean(group.included),
+        active: boolean(group.active),
         routable: boolean(group.routable),
         reason: optionalText(group.reason_code),
         credentials: list(group.credentials).map((value) => {
@@ -87,7 +93,9 @@ export async function inspectRoute(
           return {
             id: integer(credential.credential_id, 1),
             available: boolean(credential.available),
+            active: boolean(credential.active),
             reason: optionalText(credential.reason_code),
+            standbyReason: optionalText(credential.standby_reason),
             weight: integer(credential.weight),
             effectiveWeight: integer(credential.effective_weight),
             cooldownUntil: optionalNumber(credential.cooldown_until_ms),

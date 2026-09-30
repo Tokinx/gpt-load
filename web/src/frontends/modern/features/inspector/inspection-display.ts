@@ -1,8 +1,16 @@
-import type { Inspection, InspectionGroup } from '@modern/api/inspector'
+import type { Inspection, InspectionCredential, InspectionGroup } from '@modern/api/inspector'
 
+// 后端 `active` 表示“当前参与调度的层”，`available` 仍表示可调度（含备用层）。
+export function credentialActive(credential: InspectionCredential): boolean {
+  return credential.available && credential.active
+}
+export function activeCredentialCount(group: InspectionGroup): number {
+  return group.credentials.filter(credentialActive).length
+}
+// 当前层有效权重合计：只有 active 凭据参与份额计算。
 export function groupWeight(group: InspectionGroup): number {
   return group.credentials.reduce(
-    (total, credential) => total + (credential.available ? credential.effectiveWeight : 0),
+    (total, credential) => total + (credentialActive(credential) ? credential.effectiveWeight : 0),
     0,
   )
 }
@@ -11,17 +19,23 @@ export function groupsWeight(groups: readonly InspectionGroup[]): number {
   const weights = new Map<number, number>()
   for (const group of groups) {
     for (const credential of group.credentials) {
-      if (credential.available) weights.set(credential.id, credential.effectiveWeight)
+      if (credentialActive(credential)) weights.set(credential.id, credential.effectiveWeight)
     }
   }
   return [...weights.values()].reduce((total, weight) => total + weight, 0)
 }
+// 当前层由后端判定（group.active），前端不再用路由模式推测。
 export function activeGroups(result: Inspection): InspectionGroup[] {
   if (!result.routable) return []
-  const available = result.groups.filter((group) => group.included && group.routable)
-  if (result.strategy === 'weighted_mix') return available
-  const mode = available.some((group) => group.mode === 'native') ? 'native' : 'converted'
-  return available.filter((group) => group.mode === mode)
+  return result.groups.filter((group) => group.included && group.active)
+}
+// 备用分组的理由来自其凭据的 standby_reason（如 lower_group_priority / route_mode_standby）。
+export function groupStandbyReason(group: InspectionGroup): string | null {
+  if (group.active) return null
+  for (const credential of group.credentials) {
+    if (credential.available && credential.standbyReason) return credential.standbyReason
+  }
+  return null
 }
 export function reasonLabel(reason: string | null, t: (key: string) => string): string {
   const known = [
@@ -49,4 +63,15 @@ export function reasonLabel(reason: string | null, t: (key: string) => string): 
     'no_available_credential',
   ]
   return reason ? (known.includes(reason) ? t('inspector.reasons.' + reason) : reason) : '—'
+}
+export function standbyReasonLabel(
+  reason: string | null,
+  t: (key: string) => string,
+): string | null {
+  const known = [
+    'lower_group_priority',
+    'route_mode_standby',
+    'store_downgraded_standby',
+  ]
+  return reason ? (known.includes(reason) ? t('inspector.standbyReasons.' + reason) : reason) : null
 }

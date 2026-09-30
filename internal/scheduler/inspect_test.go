@@ -554,3 +554,146 @@ func TestInspectSummarizesStaticGroupExclusions(t *testing.T) {
 		})
 	}
 }
+
+func TestInspectMarksGroupPriorityTierAndEffectiveWeight(t *testing.T) {
+	t.Parallel()
+	snapshot := schedulerSnapshot()
+	highPriority, lowPriority := 90, 50
+	highGroupWeight, lowGroupWeight := 80, 20
+	group := snapshot.Groups[1]
+	group.PriorityManual = &lowPriority
+	group.WeightManual = &highGroupWeight
+	snapshot.Groups[1] = group
+	group = snapshot.Groups[2]
+	group.PriorityManual = &highPriority
+	group.WeightManual = &lowGroupWeight
+	snapshot.Groups[2] = group
+
+	inspection, err := Inspect(snapshot, []state.CredentialRuntimeView{
+		{ID: 11, GroupID: 1, Status: state.CredentialStatusActive, WeightManual: new(40)},
+		{ID: 21, GroupID: 2, Status: state.CredentialStatusActive, WeightManual: new(90)},
+	}, Query{
+		ClientProtocol: protocol.OpenAICompletions,
+		Operation:      execution.OperationChatCompletion,
+		ExternalModel:  modelPointer("gpt-4o"),
+		AccessKey:      state.AccessKeyView{Status: state.AccessKeyStatusActive},
+	}, inspectNow())
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !inspection.Routable || len(inspection.Groups) != 2 {
+		t.Fatalf("inspection = %#v", inspection)
+	}
+	if inspection.Groups[0].Active || inspection.Groups[0].Credentials[0].Active ||
+		inspection.Groups[0].Credentials[0].EffectiveWeight != 80*40 ||
+		!inspection.Groups[1].Active || !inspection.Groups[1].Credentials[0].Active ||
+		inspection.Groups[1].Credentials[0].EffectiveWeight != 20*90 ||
+		inspection.Groups[0].Credentials[0].StandbyReason != ReasonGroupPriorityStandby {
+		t.Fatalf("active/standby inspection = %#v", inspection)
+	}
+}
+
+func TestInspectRespectsAllowedCredentialRefsAndModelCooldown(t *testing.T) {
+	t.Parallel()
+	now := inspectNow()
+	snapshot := schedulerSnapshot()
+	cooldown := now.Add(time.Minute)
+	generation := uint64(7)
+	inspection, err := Inspect(snapshot, []state.CredentialRuntimeView{
+		{ID: 11, GroupID: 1, IdentityGeneration: generation, Status: state.CredentialStatusActive, ModelCooldowns: map[string]time.Time{"gpt-4o": cooldown}},
+		{ID: 12, GroupID: 1, IdentityGeneration: generation + 1, Status: state.CredentialStatusActive},
+	}, Query{
+		ClientProtocol: protocol.OpenAICompletions,
+		Operation:      execution.OperationChatCompletion,
+		ExternalModel:  modelPointer("gpt-4o"),
+		AccessKey:      state.AccessKeyView{Status: state.AccessKeyStatusActive},
+		AllowedCredentialRefs: map[uint]state.CredentialRef{
+			11: {ID: 11, GroupID: 1, IdentityGeneration: generation},
+		},
+	}, now)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	credentials := inspection.Groups[0].Credentials
+	if len(credentials) != 2 || credentials[0].Reason != ReasonModelCooldown ||
+		credentials[1].Reason != ReasonCredentialNotAllowed || inspection.Routable {
+		t.Fatalf("allowed refs/cooldown inspection = %#v", inspection)
+	}
+}
+
+func TestInspectUsesNativeFirstAndWeightedMixModeLayers(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name            string
+		strategy        state.RouteStrategy
+		nativeActive    bool
+		convertedActive bool
+	}{
+		{name: "native first", strategy: state.RouteStrategyNativeFirst, nativeActive: true},
+		{name: "weighted mix", strategy: state.RouteStrategyWeightedMix, nativeActive: true, convertedActive: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := channelSchedulerSnapshot(t)
+			snapshot.Settings.RouteStrategy = test.strategy
+			inspection, err := Inspect(snapshot, []state.CredentialRuntimeView{
+				{ID: 11, GroupID: 1, Status: state.CredentialStatusActive},
+				{ID: 21, GroupID: 2, Status: state.CredentialStatusActive},
+			}, Query{
+				ClientProtocol: protocol.OpenAICompletions,
+				Operation:      execution.OperationChatCompletion,
+				ExternalModel:  modelPointer("public"),
+				AccessKey:      state.AccessKeyView{Status: state.AccessKeyStatusActive},
+			}, inspectNow())
+			if err != nil {
+				t.Fatalf("Inspect() error = %v", err)
+			}
+			byGroup := make(map[uint]GroupInspection, len(inspection.Groups))
+			for _, group := range inspection.Groups {
+				byGroup[group.GroupID] = group
+			}
+			if byGroup[1].Active != test.convertedActive || byGroup[2].Active != test.nativeActive {
+				t.Fatalf("mode-layer inspection = %#v", inspection.Groups)
+			}
+			if test.strategy == state.RouteStrategyNativeFirst && byGroup[1].Credentials[0].StandbyReason != ReasonRouteModeStandby {
+				t.Fatalf("converted standby reason = %q", byGroup[1].Credentials[0].StandbyReason)
+			}
+		})
+	}
+}
+
+func TestInspectStoredRoutesPrecedeHigherPriorityStatelessRoutes(t *testing.T) {
+	t.Parallel()
+	snapshot := responsesStoreSchedulerSnapshot(t, true)
+	for id, group := range snapshot.Groups {
+		priority := 100
+		if id == 2 {
+			priority = 1
+		}
+		group.PriorityManual = &priority
+		snapshot.Groups[id] = group
+	}
+	query := Query{ClientProtocol: protocol.OpenAIResponses, Operation: execution.OperationResponsesCreate, ExternalModel: modelPointer("gpt"), ResponsesStorePreference: execution.ResponsesStorePreferencePreferStored}
+	credentials := []state.CredentialRuntimeView{
+		{ID: 21, GroupID: 2, Status: state.CredentialStatusActive},
+		{ID: 31, GroupID: 3, Status: state.CredentialStatusActive},
+		{ID: 41, GroupID: 4, Status: state.CredentialStatusActive},
+	}
+	inspection, err := Inspect(snapshot, credentials, query, inspectNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range inspection.Groups {
+		for _, credential := range group.Credentials {
+			if credential.Active != (credential.CredentialID == 21) {
+				t.Fatalf("stored route did not win: %#v", inspection)
+			}
+			if credential.CredentialID != 21 && credential.StandbyReason != ReasonStoreDowngradedStandby {
+				t.Fatalf("standby reason=%q", credential.StandbyReason)
+			}
+		}
+	}
+	selected, err := New(snapshot, fakeCredentialSource{keys: []state.CredentialMeta{{ID: 21, GroupID: 2}, {ID: 31, GroupID: 3}, {ID: 41, GroupID: 4}}}, query).Next()
+	if err != nil || selected.CredentialID != 21 {
+		t.Fatalf("selection=%#v err=%v", selected, err)
+	}
+}

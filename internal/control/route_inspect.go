@@ -31,6 +31,8 @@ type routeInspectAccessKeyResponse struct {
 type routeInspectCredentialResponse struct {
 	CredentialID    uint                  `json:"credential_id"`
 	Available       bool                  `json:"available"`
+	Active          bool                  `json:"active"`
+	StandbyReason   *scheduler.ReasonCode `json:"standby_reason"`
 	ReasonCode      *scheduler.ReasonCode `json:"reason_code"`
 	Weight          int                   `json:"weight"`
 	EffectiveWeight int64                 `json:"effective_weight"`
@@ -44,9 +46,11 @@ type routeInspectGroupResponse struct {
 	RouteMode                 execution.RouteMode              `json:"route_mode"`
 	RouteRequirementSatisfied bool                             `json:"route_requirement_satisfied"`
 	UpstreamModel             *string                          `json:"upstream_model"`
+	PriorityManual            *int                             `json:"priority_manual"`
 	WeightManual              *int                             `json:"weight_manual"`
 	Included                  bool                             `json:"included"`
 	Routable                  bool                             `json:"routable"`
+	Active                    bool                             `json:"active"`
 	ReasonCode                *scheduler.ReasonCode            `json:"reason_code"`
 	Credentials               []routeInspectCredentialResponse `json:"credentials"`
 }
@@ -196,9 +200,11 @@ func mapRouteInspectResponse(
 			RouteMode:                 group.RouteMode,
 			RouteRequirementSatisfied: group.RouteRequirementSatisfied,
 			UpstreamModel:             cloneRouteModel(group.UpstreamModelID),
+			PriorityManual:            cloneInt(group.PriorityManual),
 			WeightManual:              cloneInt(group.WeightManual),
 			Included:                  group.Included,
 			Routable:                  group.Routable,
+			Active:                    group.Active,
 			ReasonCode:                optionalReason(group.Reason),
 			Credentials:               []routeInspectCredentialResponse{},
 		}
@@ -213,6 +219,8 @@ func mapRouteInspectResponse(
 			groupResponse.Credentials = append(groupResponse.Credentials, routeInspectCredentialResponse{
 				CredentialID:    credential.CredentialID,
 				Available:       credential.Available,
+				Active:          credential.Active,
+				StandbyReason:   optionalReason(credential.StandbyReason),
 				ReasonCode:      optionalReason(credential.Reason),
 				Weight:          state.ConfiguredWeight(credential.WeightManual),
 				EffectiveWeight: credential.EffectiveWeight,

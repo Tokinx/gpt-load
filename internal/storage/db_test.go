@@ -683,6 +683,7 @@ func TestAutoMigrateCreatesUsageJournalAndMigrationLedger(t *testing.T) {
 		"0021_request_audit",
 		"0022_rpm_stats",
 		"0023_access_key_concurrency",
+		"0024_priority_manual",
 	}
 	if !reflect.DeepEqual(migrationIDs, wantMigrationIDs) {
 		t.Fatalf("schema_migrations IDs = %v, want %v", migrationIDs, wantMigrationIDs)
@@ -697,6 +698,55 @@ func TestAutoMigrateCreatesUsageJournalAndMigrationLedger(t *testing.T) {
 	}
 	if count != int64(len(wantMigrationIDs)) {
 		t.Fatalf("schema_migrations row count after a second migration = %d, want %d", count, len(wantMigrationIDs))
+	}
+}
+
+func TestAutoMigrateRewritesRetiredForkPriorityManualLedger(t *testing.T) {
+	t.Parallel()
+
+	for _, retiredID := range []string{"0021_priority_manual", "0022_priority_manual", "0023_priority_manual", "0021_priority_manual#building", "0022_priority_manual#building", "0023_priority_manual#building"} {
+		t.Run(retiredID, func(t *testing.T) {
+			db := openMigratedDatabase(t)
+			if err := db.Exec(
+				"DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?)",
+				"0021_request_audit",
+				"0022_rpm_stats",
+				"0023_access_key_concurrency",
+				"0024_priority_manual",
+			).Error; err != nil {
+				t.Fatalf("trim migration ledger: %v", err)
+			}
+			if err := db.Exec("INSERT INTO schema_migrations(id) VALUES (?)", retiredID).Error; err != nil {
+				t.Fatalf("seed retired fork migration ledger: %v", err)
+			}
+
+			if err := storage.AutoMigrate(db); err != nil {
+				t.Fatalf("AutoMigrate() error = %v", err)
+			}
+
+			var migrationIDs []string
+			if err := db.Table("schema_migrations").Order("id ASC").Pluck("id", &migrationIDs).Error; err != nil {
+				t.Fatalf("read schema_migrations: %v", err)
+			}
+			wantTail := []string{"0020_client_model_overrides", "0021_request_audit", "0022_rpm_stats", "0023_access_key_concurrency", "0024_priority_manual"}
+			if len(migrationIDs) < len(wantTail) {
+				t.Fatalf("schema_migrations = %v, want trailing %v", migrationIDs, wantTail)
+			}
+			gotTail := migrationIDs[len(migrationIDs)-len(wantTail):]
+			if !reflect.DeepEqual(gotTail, wantTail) {
+				t.Fatalf("schema_migrations trailing IDs = %v, want %v", gotTail, wantTail)
+			}
+			if !db.Migrator().HasColumn("groups", "priority_manual") {
+				t.Fatal("priority_manual columns missing after rewrite")
+			}
+			var retiredCount int64
+			if err := db.Table("schema_migrations").Where("id = ?", retiredID).Count(&retiredCount).Error; err != nil {
+				t.Fatalf("count retired ledger row: %v", err)
+			}
+			if retiredCount != 0 {
+				t.Fatalf("retired ledger row count = %d, want 0", retiredCount)
+			}
+		})
 	}
 }
 
@@ -1210,5 +1260,47 @@ func assertDuplicateRejected(t *testing.T, firstErr, duplicateErr error) {
 	}
 	if duplicateErr == nil {
 		t.Fatal("create duplicate record error = nil, want unique constraint error")
+	}
+}
+
+// The previous two-level release used the same 0024 ID after upstream 0023.
+// Keep its complete ledger and both columns intact when adopting group-only.
+func TestAutoMigrateAcceptsExistingTwoLevel0024Database(t *testing.T) {
+	t.Parallel()
+	db := openMigratedDatabase(t)
+	if err := db.Exec("ALTER TABLE credentials ADD COLUMN priority_manual integer NULL").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO groups (
+ id,name,channel_id,connection_type,params,models,enabled,created_at_ms,updated_at_ms,priority_manual
+ ) VALUES (999,'legacy-priority','openai','api_key','{}','[]',true,1,1,80)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO credentials (
+ id,group_id,data,fingerprint,identity_fingerprint,secret_version,auth_state,auth_error_code,status,created_at_ms,updated_at_ms,priority_manual
+ ) VALUES (999,999,'cipher','legacy-fingerprint','legacy-identity',1,'ready','','active',1,1,90)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := storage.AutoMigrate(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var groupPriority, credentialPriority int
+	if err := db.Table("groups").Select("priority_manual").Where("id = 999").Scan(&groupPriority).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Table("credentials").Select("priority_manual").Where("id = 999").Scan(&credentialPriority).Error; err != nil {
+		t.Fatal(err)
+	}
+	if groupPriority != 80 || credentialPriority != 90 {
+		t.Fatalf("existing priorities changed: group=%d credential=%d", groupPriority, credentialPriority)
+	}
+	var count int64
+	if err := db.Table("schema_migrations").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 24 {
+		t.Fatalf("migration ledger count=%d want=24", count)
 	}
 }

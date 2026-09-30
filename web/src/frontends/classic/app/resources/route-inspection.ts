@@ -82,7 +82,10 @@ export type RouteInspectMode = 'native' | 'converted'
 export interface RouteInspectCredentialDto {
   credential_id: number
   available: boolean
+  active: boolean
   reason_code: RouteInspectReasonCode | null
+  // available 为真但落在备用层时的原因（如 lower_group_priority / route_mode_standby）。
+  standby_reason: string | null
   weight: number
   effective_weight: number
   cooldown_until_ms: number | null
@@ -95,8 +98,10 @@ export interface RouteInspectGroupDto {
   route_mode: RouteInspectMode
   route_requirement_satisfied: boolean
   upstream_model: string | null
+  priority_manual: number | null
   weight_manual: number | null
   included: boolean
+  active: boolean
   routable: boolean
   reason_code: RouteInspectReasonCode | null
   credentials: RouteInspectCredentialDto[]
@@ -193,6 +198,12 @@ function projectReason(value: unknown): RouteInspectReasonCode | null {
   return value === null ? null : projectEnum(value, reasonCodes)
 }
 
+// 后端用空字符串表示“不在备用层”，这里统一归一为 null。
+function projectNullableStandbyReason(value: unknown): string | null {
+  if (value === null || value === '') return null
+  return projectNonBlankString(value)
+}
+
 function projectNullableWeight(value: unknown): number | null {
   return value === null ? null : projectSafeInteger(value, { minimum: 0, maximum: 100 })
 }
@@ -202,7 +213,9 @@ function projectRouteCredential(value: unknown): RouteInspectCredentialDto {
   assertNoSecretLikeFields(record, [
     'credential_id',
     'available',
+    'active',
     'reason_code',
+    'standby_reason',
     'weight',
     'effective_weight',
     'cooldown_until_ms',
@@ -210,7 +223,9 @@ function projectRouteCredential(value: unknown): RouteInspectCredentialDto {
   return {
     credential_id: projectSafeInteger(record.credential_id, { minimum: 1 }),
     available: projectBoolean(record.available),
+    active: projectBoolean(record.active),
     reason_code: projectReason(record.reason_code),
+    standby_reason: projectNullableStandbyReason(record.standby_reason),
     weight: projectSafeInteger(record.weight, { minimum: 0, maximum: 100 }),
     effective_weight: projectSafeInteger(record.effective_weight, { minimum: 0 }),
     cooldown_until_ms: projectNullableEpochMilliseconds(record.cooldown_until_ms),
@@ -226,8 +241,10 @@ function projectRouteGroup(value: unknown): RouteInspectGroupDto {
     'route_mode',
     'route_requirement_satisfied',
     'upstream_model',
+    'priority_manual',
     'weight_manual',
     'included',
+    'active',
     'routable',
     'reason_code',
     'credentials',
@@ -239,8 +256,13 @@ function projectRouteGroup(value: unknown): RouteInspectGroupDto {
     route_mode: projectEnum(record.route_mode, routeModes),
     route_requirement_satisfied: projectBoolean(record.route_requirement_satisfied),
     upstream_model: projectNullableNonBlankString(record.upstream_model),
+    priority_manual:
+      record.priority_manual === null
+        ? null
+        : projectSafeInteger(record.priority_manual, { minimum: 1, maximum: 100 }),
     weight_manual: projectNullableWeight(record.weight_manual),
     included: projectBoolean(record.included),
+    active: projectBoolean(record.active),
     routable: projectBoolean(record.routable),
     reason_code: projectReason(record.reason_code),
     credentials: projectArray(record.credentials, projectRouteCredential),

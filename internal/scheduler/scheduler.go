@@ -53,8 +53,9 @@ type candidateTarget struct {
 }
 
 type weightedCredential struct {
-	meta   state.CredentialMeta
-	weight int64
+	meta          state.CredentialMeta
+	weight        int64
+	groupPriority int
 }
 
 type candidatePool struct {
@@ -89,6 +90,7 @@ type normalizedQuery struct {
 	externalModel            *string
 	accessKey                state.AccessKeyView
 	allowedCredentialIDs     map[uint]struct{}
+	allowedCredentialRefs    map[uint]credentialIdentity
 }
 
 func New(snapshot *state.ConfigSnapshot, credentials CredentialSource, query Query) *Iterator {
@@ -148,8 +150,8 @@ func newWithClock(
 		iterator.progress.SyncGroups(snapshot)
 	}
 
-	if snapshot != nil && snapshot.Settings.RouteStrategy == state.RouteStrategyWeightedMix {
-		iterator.routeModeTiers = [][]channel.RouteMode{{channel.RouteNative, channel.RouteConverted}}
+	if snapshot != nil {
+		iterator.routeModeTiers = routeModeTiersForStrategy(snapshot.Settings.RouteStrategy)
 	}
 	targets, staticReason := filterTargetsWithReason(snapshot, query)
 	iterator.staticReason = staticReason
@@ -264,7 +266,11 @@ func (iterator *Iterator) withWeightedPool(candidates *candidatePool, modes []ch
 				}
 				weight := effectiveWeight(target.group.WeightManual, credential.WeightManual)
 				if weight > 0 {
-					weighted = append(weighted, weightedCredential{meta: credential, weight: weight})
+					weighted = append(weighted, weightedCredential{
+						meta:          credential,
+						weight:        weight,
+						groupPriority: state.ConfiguredPriority(target.group.PriorityManual),
+					})
 				}
 				break
 			}
@@ -291,7 +297,10 @@ func (iterator *Iterator) Next() (Selection, error) {
 			var found bool
 			now := iterator.now()
 			iterator.withWeightedPool(pool, modes, now, func(weighted []weightedCredential) {
-				selected, found = iterator.selectCredential(weighted, iterator.preferredCredentialID)
+				selected, found = iterator.selectCredential(
+					filterHighestRoutingTier(weighted),
+					iterator.preferredCredentialID,
+				)
 				if !found {
 					return
 				}
@@ -392,6 +401,7 @@ func normalizeQuery(query Query) normalizedQuery {
 		externalModel:            cloneString(query.ExternalModel),
 		accessKey:                query.AccessKey,
 		allowedCredentialIDs:     cloneAllowedCredentialIDs(query),
+		allowedCredentialRefs:    cloneCredentialIdentities(query.AllowedCredentialRefs),
 	}
 }
 
@@ -435,6 +445,7 @@ func cloneGroupView(group state.GroupView) state.GroupView {
 	group.Params = append([]byte(nil), group.Params...)
 	group.ClientProtocols = append([]protocol.Protocol(nil), group.ClientProtocols...)
 	group.Models = append([]state.ModelConfig(nil), group.Models...)
+	group.PriorityManual = cloneWeight(group.PriorityManual)
 	group.WeightManual = cloneWeight(group.WeightManual)
 	group.HeaderRules.Set = cloneStringMap(group.HeaderRules.Set)
 	group.HeaderRules.Remove = append([]string(nil), group.HeaderRules.Remove...)

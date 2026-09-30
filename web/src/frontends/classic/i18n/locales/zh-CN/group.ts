@@ -210,8 +210,10 @@ export default {
         danger: '危险区域',
       },
       routing: {
-        description: '调整分组参与请求分配的相对权重。',
-        weightHelp: '默认 50，范围 1–100；与凭据权重相乘，决定分配比例。',
+        description: '优先级决定主备层级；权重用于同层按有效权重公平分摊。',
+        priorityHelp: '默认 50，范围 1–100；数值越大越先进入当前层。',
+        weightHelp:
+          '默认 50，范围 1–100；与凭据权重相乘形成有效权重，仅用于同层公平分摊，不决定主备层级。',
       },
       headers: {
         description: '发往上游前设置、覆盖或移除的请求头规则；覆盖后将完整替换全局规则，不做合并。',
@@ -313,9 +315,11 @@ export default {
         validationModel: '测试模型（可选）',
         validationModelPlaceholder: '搜索或输入模型 ID',
         validationModelHelp: '留空时使用分组的第一个模型；这里填上游模型 ID，不是别名。',
+        priority: '分组优先级',
         weight: '分组权重',
         auto: '自动',
         manual: '手动',
+        priorityError: '请输入 1–100 之间的整数',
         weightError: '请输入 1–100 之间的整数',
         enabled: '启用分组',
         enabledHelp: '停用后，新请求不再选择此分组。',
