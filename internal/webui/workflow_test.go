@@ -2637,7 +2637,7 @@ func TestDockerfilePinsBuildAndRuntimeImagesByVersionAndDigest(t *testing.T) {
 	}
 }
 
-func TestDockerfileRuntimePinsPatchedOpenSSLPackages(t *testing.T) {
+func TestDockerfileRuntimeRequiresPatchedOpenSSLPackages(t *testing.T) {
 	content := readRepositoryFile(t, "Dockerfile")
 	runtimeStart := strings.Index(content, "\nFROM alpine:")
 	if runtimeStart < 0 {
@@ -2649,10 +2649,10 @@ func TestDockerfileRuntimePinsPatchedOpenSSLPackages(t *testing.T) {
 	}
 	runtimeStage := content[runtimeStart : runtimeStart+1+runtimeEnd]
 
-	upgrade := "apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0"
+	upgrade := "apk add --no-cache 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0'"
 	upgradeIndex := strings.Index(runtimeStage, upgrade)
 	if upgradeIndex < 0 {
-		t.Fatalf("Dockerfile runtime stage does not pin patched OpenSSL packages via %q", upgrade)
+		t.Fatalf("Dockerfile runtime stage does not enforce patched OpenSSL package minimums via %q", upgrade)
 	}
 	packageInstallIndex := strings.Index(runtimeStage, "apk add --no-cache ca-certificates tzdata")
 	if packageInstallIndex < 0 {

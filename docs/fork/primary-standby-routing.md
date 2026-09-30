@@ -42,3 +42,24 @@ Inspector 的 `available` / `routable` 表示资格，`active` 表示当前参�
 4. 在 web 使用锁定依赖，执行 type-check、lint、build 和 Inspector display tests。
 5. 验证全新数据库、历史 fork 账本（含 building）、主层失效/恢复、同层权重，以及 Inspector 与调度一致。
 6. 在数据库副本上演练升级后再部署；单元测试不等于已验证生产升级。
+
+## Fork 镜像与部署
+
+`feat/group-priority` 推送触发独立的 `Docker Image` 工作流，发布到
+`ghcr.io/tokinx/gpt-load:group-priority`，同时发布完整提交 SHA 标签。
+上游 Release 工作流与 `latest` 标签保持不变。只有 CI 成功且对应镜像已发布，才能用该标签部署。
+
+Compose 可直接引用远程镜像，无须重新打标签为 `gpt-load:local`：
+
+```yaml
+services:
+  gpt-load:
+    image: ghcr.io/tokinx/gpt-load:group-priority
+```
+
+升级前保留旧镜像，并在停止写入后备份数据目录、密钥和 Compose 配置；先在数据副本演练迁移。
+拉取镜像后核对 `org.opencontainers.image.revision` 与预期提交，再重建并验证健康接口、版本与数据库完整性。
+涉及数据库升级的回滚需要同时恢复备份数据，不能仅切换旧镜像。
+
+Dockerfile 保持基础镜像版本和 digest 固定，对 OpenSSL 强制不低于 `3.5.8-r0` 的安全版本下限，
+允许 Alpine 同一发行版中的更新补丁。不要锁死滚动软件源可能已移除的补丁包，也不要为通过构建降级安全依赖。

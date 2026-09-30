@@ -72,4 +72,4 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ inputs.tag || 'group-priority' }}
+            VERSION=${{ inputs.tag || 'group-priority' }}-${{ github.sha }}
