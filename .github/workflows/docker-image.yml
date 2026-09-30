@@ -1,0 +1,75 @@
+name: Docker Image
+
+# Fork 专用：分支推送时构建到 GHCR，不依赖 Docker Hub 与自托管 Runner。
+# 向上游开 PR 前请删除本文件。
+on:
+  push:
+    branches: [feat/group-priority]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag (without registry prefix)
+        required: true
+        default: group-priority
+      platforms:
+        description: Target platforms
+        required: true
+        default: linux/amd64,linux/arm64
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+concurrency:
+  group: docker-image-${{ github.ref }}-${{ inputs.tag || 'group-priority' }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    if: github.repository == 'Tokinx/gpt-load'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ inputs.tag || 'group-priority' }}
+            type=raw,value=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ inputs.tag || 'group-priority' }}
